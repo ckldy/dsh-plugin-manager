@@ -144,6 +144,26 @@ test('update checker reports available registry versions without mutating profil
   assert.equal(result.results[0].status, 'available'); assert.equal(result.results[0].latestVersion, '1.2.0')
 })
 
+test('single-plugin update check does not query other installed plugins', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'dpm-single-update-')); const dir = join(home, 'profiles', 'web')
+  await mkdir(join(dir, 'node_modules', 'first'), { recursive: true }); await mkdir(join(dir, 'node_modules', 'second'), { recursive: true })
+  await atomicWriteJson(join(dir, 'package.json'), { name: 'profile', dependencies: { first: '1.0.0', second: '1.0.0' } })
+  await atomicWriteJson(join(dir, 'node_modules', 'first', 'package.json'), { name: 'first', version: '1.0.0' }); await atomicWriteJson(join(dir, 'node_modules', 'second', 'package.json'), { name: 'second', version: '1.0.0' })
+  const requested = []; const health = new PluginHealthService(new ProfileInspector(home), async (url) => { requested.push(String(url)); return new Response(JSON.stringify({ 'dist-tags': { latest: '1.0.0' } }), { status: 200 }) }, process.execPath)
+  const result = await health.checkUpdates('web', ['first'])
+  assert.deepEqual(result.results.map((entry) => entry.packageName), ['first']); assert.equal(requested.length, 1); assert.match(requested[0], /registry\.npmjs\.org\/first$/)
+})
+
+test('update checker returns current version notes when no update is available', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'dpm-current-update-')); const dir = join(home, 'profiles', 'web'); const moduleDir = join(dir, 'node_modules', 'demo')
+  await mkdir(moduleDir, { recursive: true })
+  await atomicWriteJson(join(dir, 'package.json'), { name: 'profile', dependencies: { demo: '1.0.0' } })
+  await atomicWriteJson(join(moduleDir, 'package.json'), { name: 'demo', version: '1.0.0' })
+  const health = new PluginHealthService(new ProfileInspector(home), async () => new Response(JSON.stringify({ 'dist-tags': { latest: '1.0.0' }, versions: { '1.0.0': { changelog: '当前版本更新说明' } } }), { status: 200 }), process.execPath)
+  const result = await health.checkUpdates('web')
+  assert.equal(result.results[0].status, 'current'); assert.equal(result.results[0].releaseNotes.text, '当前版本更新说明')
+})
+
 test('integrity checker finds missing peer and validates bundle files', async () => {
   const home = await mkdtemp(join(tmpdir(), 'dpm-integrity-')); const dir = join(home, 'profiles', 'web'); const moduleDir = join(dir, 'node_modules', 'demo')
   await mkdir(moduleDir, { recursive: true }); await writeFile(join(moduleDir, 'cordis.patch.yml'), 'plugins: []\n')
