@@ -66,6 +66,14 @@ dsh --profile <profile-name> --dump-config
 
 发现列表每页显示 50 条。可使用 Stars / 最近更新排序与功能分类筛选。侧边卡片模式将常用控件保持在顶部；搜索、Profile 切换和 URL 解析安装位于 **更多** 中。
 
+### 官方 GitHub Topic 目录
+
+内置的 **GitHub DSH Plugins** 来源对应官方 [dsh-plugin Topic](https://github.com/topics/dsh-plugin)。目录加载使用 GitHub Search API，每页读取 100 项，最多读取 API 允许的前 1,000 项。来源状态会显示“已加载 / 官方总数”；当官方 Topic 超过 1,000 项时会标记 **API 上限**。
+
+这是 GitHub Search API 对单个查询的硬性限制，不表示官方 Topic 页面只有 1,000 项。插件中心不会把该限制误显示为官方目录总数。
+
+当使用搜索框时，插件中心先查询并优先展示来自官方 `dsh-plugin` Topic 的匹配插件，再展示精选目录和其他自定义来源的匹配项；同一来源组内继续按所选的 Stars 或最近更新时间排序。
+
 ## 添加插件源
 
 进入 **插件源**，填写名称、HTTPS 地址和来源类型。

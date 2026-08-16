@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { analyzeInstall, assertPublicHttpsUrl, classifyPlugin, atomicWriteJson, compareVersions, extractRepositoriesFromHtml, manifestIconUrl, normalizeCatalogItem, normalizeRepositoryUrl, safeIconUrl, PluginHealthService, ProfileInspector, SourceStore, stableHash } from '../lib/core.js'
+import { analyzeInstall, assertPublicHttpsUrl, CatalogService, classifyPlugin, atomicWriteJson, compareVersions, extractRepositoriesFromHtml, manifestIconUrl, normalizeCatalogItem, normalizeRepositoryUrl, safeIconUrl, PluginHealthService, ProfileInspector, SourceStore, stableHash } from '../lib/core.js'
 
 test('normalizes GitHub repository, tree and git URLs', () => {
   assert.deepEqual(normalizeRepositoryUrl('https://github.com/acme/plugin'), { kind: 'github', owner: 'acme', repo: 'plugin', repositoryUrl: 'https://github.com/acme/plugin', installSpec: 'github:acme/plugin' })
@@ -44,6 +44,37 @@ test('merges curated metadata with live catalog entries by repository', async ()
   const live = normalizeCatalogItem({ name: 'plugin', full_name: 'acme/plugin', html_url: 'https://github.com/acme/plugin', description: 'live description', stargazers_count: 9 }, 'github-dsh-plugin')
   const merged = service.mergeCatalogItems([curated, live])[0]
   assert.equal(merged.packageName, 'acme-plugin'); assert.equal(merged.descriptionZh, '精选中文简介'); assert.equal(merged.stars, 9); assert.deepEqual(merged.sources, ['curated-awesome-dsh-plugin', 'github-dsh-plugin'])
+})
+
+test('merges catalog records that resolve to the same npm package', async () => {
+  const service = new CatalogService('/tmp/dpm-package-merge-test', null)
+  const primary = normalizeCatalogItem({ name: 'plugin-a', full_name: 'acme/plugin-a', html_url: 'https://github.com/acme/plugin-a', packageName: '@acme/plugin', descriptionZh: '中文简介', stargazers_count: 3 }, 'curated-awesome-dsh-plugin')
+  const mirror = normalizeCatalogItem({ name: 'plugin-mirror', full_name: 'mirror/plugin', html_url: 'https://github.com/mirror/plugin', packageName: '@acme/plugin', description: 'mirror description', stargazers_count: 9 }, 'github-dsh-plugin')
+  const merged = service.mergeCatalogItems([primary, mirror])
+  assert.equal(merged.length, 1); assert.equal(merged[0].packageName, '@acme/plugin'); assert.equal(merged[0].descriptionZh, '中文简介'); assert.equal(merged[0].stars, 9); assert.deepEqual(merged[0].sources.sort(), ['curated-awesome-dsh-plugin', 'github-dsh-plugin'])
+})
+
+test('official Topic catalog loads GitHub API pages up to the bounded limit', async () => {
+  const requested = []
+  const fetchImpl = async (url) => {
+    const parsed = new URL(url); const page = Number(parsed.searchParams.get('page')); requested.push({ page, perPage: parsed.searchParams.get('per_page') })
+    const total_count = 250; const start = (page - 1) * 100
+    return { ok: true, json: async () => ({ total_count, items: Array.from({ length: Math.max(0, Math.min(100, total_count - start)) }, (_, index) => ({ name: `plugin-${start + index}`, full_name: `acme/plugin-${start + index}`, html_url: `https://github.com/acme/plugin-${start + index}`, stargazers_count: start + index })) }) }
+  }
+  const service = new CatalogService(await mkdtemp(join(tmpdir(), 'dpm-topic-')), null, fetchImpl)
+  const result = await service.officialTopicCatalog('', 'stars')
+  assert.equal(result.items.length, 250); assert.equal(result.loaded, 250); assert.equal(result.available, 250); assert.equal(result.capped, false)
+  assert.deepEqual(requested.map((request) => request.page).sort((a, b) => a - b), [1, 2, 3]); assert.ok(requested.every((request) => request.perPage === '100'))
+})
+
+test('search results prioritize official Topic matches over other sources', async () => {
+  const sources = { list: async () => [{ id: 'github-dsh-plugin', name: 'GitHub DSH Plugins', type: 'github-topic', enabled: true }, { id: 'other', name: 'Other', type: 'json', enabled: true }] }
+  const service = new CatalogService(await mkdtemp(join(tmpdir(), 'dpm-priority-')), sources)
+  service.curatedRegistry = async () => ({ items: [] })
+  service.officialTopicCatalog = async () => ({ items: [normalizeCatalogItem({ name: 'official', full_name: 'official/search-plugin', html_url: 'https://github.com/official/search-plugin', stargazers_count: 1 }, 'github-dsh-plugin')], total: 1, loaded: 1, available: 1 })
+  service.customSource = async () => ({ items: [normalizeCatalogItem({ name: 'other', full_name: 'other/search-plugin', html_url: 'https://github.com/other/search-plugin', stargazers_count: 999 }, 'other')], total: 1 })
+  const result = await service.list('search', 'stars')
+  assert.equal(result.items[0].fullName, 'official/search-plugin'); assert.equal(result.items[1].fullName, 'other/search-plugin')
 })
 
 test('resolves safe plugin icons with repository fallback', () => {
