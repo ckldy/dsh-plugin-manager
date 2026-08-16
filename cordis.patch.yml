@@ -1,0 +1,3 @@
+- insert:
+    - id: plugin-manager-local
+      name: 'dsh-plugin-manager-local'
