@@ -19,6 +19,16 @@ test('normalizes npm package URLs including scoped and versioned packages', () =
   assert.equal(normalizeRepositoryUrl('https://www.npmjs.com/package/example/v/1.2.3').installSpec, 'example')
 })
 
+test('normalizes Hugging Face models and Spaces repositories', () => {
+  assert.deepEqual(normalizeRepositoryUrl('https://huggingface.co/acme/dsh-plugin'), { kind: 'huggingface', owner: 'acme', repo: 'dsh-plugin', space: false, sourcePath: 'acme/dsh-plugin', repositoryUrl: 'https://huggingface.co/acme/dsh-plugin', installSpec: 'git+https://huggingface.co/acme/dsh-plugin.git', ref: undefined })
+  assert.equal(normalizeRepositoryUrl('https://huggingface.co/spaces/acme/dsh-ui/tree/main').installSpec, 'git+https://huggingface.co/spaces/acme/dsh-ui.git#main')
+})
+
+test('marks projects without a DSH bundle as not installable', () => {
+  assert.equal(analyzeInstall({ plugins: [], packages: [] }, { name: 'plain', dependencies: {} }).integration.eligible, false)
+  assert.equal(analyzeInstall({ plugins: [], packages: [] }, { name: 'dsh', dependencies: {}, dsh: { bundle: { patch: './cordis.patch.yml' } } }).integration.eligible, true)
+})
+
 test('rejects unsafe and unsupported URLs', () => {
   for (const url of ['http://github.com/a/b', 'file:///tmp/plugin', 'https://127.0.0.1/plugin', 'javascript:alert(1)']) assert.throws(() => normalizeRepositoryUrl(url))
 })
@@ -233,6 +243,13 @@ test('update checker returns current version notes when no update is available',
   assert.equal(result.results[0].status, 'current'); assert.equal(result.results[0].releaseNotes.text, '当前版本更新说明')
 })
 
+test('install planning rejects projects that cannot be integrated into DSH', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'dpm-non-plugin-')); const dir = join(home, 'profiles', 'web')
+  await mkdir(join(dir, 'node_modules'), { recursive: true }); await atomicWriteJson(join(dir, 'package.json'), { name: 'profile', dependencies: {}, dsh: { profile: { bundles: [] } } })
+  const mutations = new MutationManager(home, new ProfileInspector(home), process.execPath)
+  await assert.rejects(() => mutations.planInstall('web', [{ item: { installSpec: 'plain' }, manifest: { name: 'plain', version: '1.0.0' } }]), { code: 'not-dsh-plugin' })
+})
+
 test('install mutation executes once, lists tasks and removes success snapshots', async () => {
   const home = await mkdtemp(join(tmpdir(), 'dpm-mutation-')); const dir = join(home, 'profiles', 'web'); const moduleDir = join(dir, 'node_modules', 'demo')
   await mkdir(moduleDir, { recursive: true })
@@ -257,6 +274,7 @@ process.exit(0)
   const task = await mutations.execute(plan.id, plan.hash)
   while (!task.finishedAt) await new Promise((resolve) => setTimeout(resolve, 10))
   assert.equal(task.status, 'success'); assert.equal(task.rolledBack, undefined)
+  assert.deepEqual(JSON.parse(await readFile(join(dir, 'package.json'), 'utf8')).dsh.profile.bundles, ['demo'])
   assert.equal(mutations.listTasks().length, 1); assert.equal(mutations.listTasks()[0].status, 'success')
   await assert.rejects(() => mutations.execute(plan.id, plan.hash), /已经执行过/)
   await assert.rejects(() => readFile(join(dir, '.dsh-plugin-snapshots', task.id, 'package.json')), { code: 'ENOENT' })

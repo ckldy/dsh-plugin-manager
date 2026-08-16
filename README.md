@@ -132,10 +132,12 @@ JSON 源使用如下格式（`schemaVersion` 必须为 `1`）：
 
 ### 通过 URL 安装
 
-在发现页输入 GitHub 仓库 URL 或 npm 包 URL，点击 **解析并安装**。例如：
+在发现页输入 GitHub、Hugging Face 仓库/Space 或 npm 包 URL，点击 **解析并安装**。插件中心会读取 `package.json`，仅接受声明 `dsh.bundle.patch` 的项目；普通项目会在安装计划生成前被拒绝。成功安装后，插件中心将 Bundle 写入目标 Profile 的 `dsh.profile.bundles` 并执行 DSH 配置校验，确保项目已集成且启用。
 
 ```text
 https://github.com/example/dsh-example-plugin
+https://huggingface.co/example/dsh-example-plugin
+https://huggingface.co/spaces/example/dsh-example-plugin
 https://www.npmjs.com/package/example-dsh-plugin
 ```
 
