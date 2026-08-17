@@ -24,9 +24,12 @@ test('normalizes Hugging Face models and Spaces repositories', () => {
   assert.equal(normalizeRepositoryUrl('https://huggingface.co/spaces/acme/dsh-ui/tree/main').installSpec, 'git+https://huggingface.co/spaces/acme/dsh-ui.git#main')
 })
 
-test('marks projects without a DSH bundle as not installable', () => {
-  assert.equal(analyzeInstall({ plugins: [], packages: [] }, { name: 'plain', dependencies: {} }).integration.eligible, false)
-  assert.equal(analyzeInstall({ plugins: [], packages: [] }, { name: 'dsh', dependencies: {}, dsh: { bundle: { patch: './cordis.patch.yml' } } }).integration.eligible, true)
+test('selects a generic installation mode for projects without a DSH bundle', () => {
+  const plain = analyzeInstall({ plugins: [], packages: [] }, { name: 'plain', dependencies: {} })
+  assert.equal(plain.integration.eligible, false)
+  assert.equal(plain.installMode, 'profile-package')
+  assert.equal(plain.risks[0].kind, 'generic-install')
+  assert.equal(analyzeInstall({ plugins: [], packages: [] }, { name: 'dsh', dependencies: {}, dsh: { bundle: { patch: './cordis.patch.yml' } } }).installMode, 'dsh-bundle')
 })
 
 test('rejects unsafe and unsupported URLs', () => {
@@ -243,11 +246,13 @@ test('update checker returns current version notes when no update is available',
   assert.equal(result.results[0].status, 'current'); assert.equal(result.results[0].releaseNotes.text, '当前版本更新说明')
 })
 
-test('install planning rejects projects that cannot be integrated into DSH', async () => {
+test('install planning accepts projects without a Bundle and returns a generic installation method', async () => {
   const home = await mkdtemp(join(tmpdir(), 'dpm-non-plugin-')); const dir = join(home, 'profiles', 'web')
   await mkdir(join(dir, 'node_modules'), { recursive: true }); await atomicWriteJson(join(dir, 'package.json'), { name: 'profile', dependencies: {}, dsh: { profile: { bundles: [] } } })
   const mutations = new MutationManager(home, new ProfileInspector(home), process.execPath)
-  await assert.rejects(() => mutations.planInstall('web', [{ item: { installSpec: 'plain' }, manifest: { name: 'plain', version: '1.0.0' } }]), { code: 'not-dsh-plugin' })
+  const plan = await mutations.planInstall('web', [{ item: { installSpec: 'plain' }, manifest: { name: 'plain', version: '1.0.0' } }])
+  assert.equal(plan.items[0].analysis.installMode, 'profile-package')
+  assert.deepEqual(plan.summary.installModes, [{ packageName: 'plain', mode: 'profile-package', command: 'dsh plugin --profile web add plain', integration: '作为普通 Profile 依赖安装；参照 README 完成后续集成' }])
 })
 
 test('install mutation executes once, lists tasks and removes success snapshots', async () => {
@@ -281,6 +286,34 @@ process.exit(0)
   await assert.rejects(() => mutations.execute(plan.id, plan.hash), /已经执行过/)
   await assert.rejects(() => readFile(join(dir, '.dsh-plugin-snapshots', task.id, 'package.json')), { code: 'ENOENT' })
 })
+
+test('generic installation keeps a project out of the DSH Bundle list', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'dpm-generic-install-')); const dir = join(home, 'profiles', 'web')
+  await mkdir(join(dir, 'node_modules'), { recursive: true })
+  await atomicWriteJson(join(dir, 'package.json'), { name: 'profile', dependencies: {}, dsh: { profile: { bundles: [] } } })
+  const fakeCli = join(home, 'fake-dsh.cjs')
+  await writeFile(fakeCli, `#!/usr/bin/env node
+const fs = require('node:fs'); const path = require('node:path')
+const args = process.argv.slice(2); const home = ${JSON.stringify(home)}
+if (args.includes('--dump-config')) process.exit(0)
+const profile = args[args.indexOf('--profile') + 1]; const dir = path.join(home, 'profiles', profile)
+const manifestPath = path.join(dir, 'package.json'); const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'))
+const spec = args[args.indexOf('add') + 1]; manifest.dependencies.plain = spec
+fs.mkdirSync(path.join(dir, 'node_modules', 'plain'), { recursive: true })
+fs.writeFileSync(path.join(dir, 'node_modules', 'plain', 'package.json'), JSON.stringify({ name: 'plain', version: '1.0.0' }))
+fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2))
+`)
+  await import('node:fs/promises').then(({ chmod }) => chmod(fakeCli, 0o755))
+  const mutations = new MutationManager(home, new ProfileInspector(home), fakeCli)
+  const plan = await mutations.planInstall('web', [{ item: { installSpec: 'plain' }, manifest: { name: 'plain', version: '1.0.0' } }])
+  const task = await mutations.execute(plan.id, plan.hash)
+  while (!task.finishedAt) await new Promise((resolve) => setTimeout(resolve, 10))
+  const profile = JSON.parse(await readFile(join(dir, 'package.json'), 'utf8'))
+  assert.equal(task.status, 'success')
+  assert.equal(profile.dependencies.plain, 'plain')
+  assert.deepEqual(profile.dsh.profile.bundles, [])
+})
+
 
 test('integrity checker finds missing peer and validates bundle files', async () => {
   const home = await mkdtemp(join(tmpdir(), 'dpm-integrity-')); const dir = join(home, 'profiles', 'web'); const moduleDir = join(dir, 'node_modules', 'demo')

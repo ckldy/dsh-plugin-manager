@@ -1,6 +1,6 @@
 {
   "name": "dsh-plugin-manager-local",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "Safe DSH plugin marketplace and lifecycle manager",
   "type": "module",
   "main": "lib/index.js",

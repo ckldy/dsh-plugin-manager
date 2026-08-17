@@ -103,6 +103,16 @@ test('identical install spec is still a duplicate and is skipped', async () => {
   assert.equal(plan.items[0].analysis.duplicate.packageName, 'demo')
 })
 
+
+test('an identical install plan is marked as current and cannot be executed', async () => {
+  const { dir, api } = await fixture(); await mkdir(join(dir, 'node_modules', 'demo'), { recursive: true })
+  await atomicWriteJson(join(dir, 'package.json'), { name: 'profile', dependencies: { demo: 'github:acme/demo' }, dsh: { profile: { bundles: [] } } })
+  await atomicWriteJson(join(dir, 'node_modules', 'demo', 'package.json'), { name: 'demo', version: '1.0.0' })
+  const plan = await api.dispatch('plan.install', { profile: 'web', items: [{ item: { name: 'demo', installSpec: 'github:acme/demo' }, manifest: { name: 'demo', version: '1.0.0' } }] }, new URLSearchParams())
+  assert.equal(plan.summary.noChanges, true)
+  await assert.rejects(() => api.dispatch('mutation.execute', { planId: plan.id, planHash: plan.hash }, new URLSearchParams()), { code: 'already-current' })
+})
+
 test('existing externally integrated package can update without a new bundle declaration', async () => {
   const { dir, api } = await fixture(); await mkdir(join(dir, 'node_modules', 'Vibe-Skills'), { recursive: true })
   await atomicWriteJson(join(dir, 'package.json'), { name: 'profile', dependencies: { 'Vibe-Skills': 'github:owner/Vibe-Skills#v1.0.0' }, dsh: { profile: { bundles: [] } } })
