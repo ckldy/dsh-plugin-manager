@@ -39,6 +39,28 @@ test('uninstall plan blocks reverse dependencies and cascade walks transitive de
   assert.deepEqual(new Set(cascade.packageNames), new Set(['base', 'consumer', 'wrapper']))
 })
 
+test('install plan reuses compatible shared dependencies without duplicate additions', async () => {
+  const { dir, api } = await fixture(); await mkdir(join(dir, 'node_modules', 'shared'), { recursive: true }); await mkdir(join(dir, 'node_modules', 'existing'), { recursive: true })
+  await atomicWriteJson(join(dir, 'package.json'), { name: 'profile', dependencies: { shared: '1.2.0', existing: '1.0.0' }, dsh: { profile: { bundles: ['existing'] } } })
+  await atomicWriteJson(join(dir, 'node_modules', 'shared', 'package.json'), { name: 'shared', version: '1.2.0' })
+  await atomicWriteJson(join(dir, 'node_modules', 'existing', 'package.json'), { name: 'existing', version: '1.0.0', dependencies: { shared: '^1.0.0' }, dsh: { bundle: { patch: './cordis.patch.yml' } } })
+  const plan = await api.dispatch('plan.install', { profile: 'web', items: [{ item: { name: 'incoming', installSpec: 'incoming' }, manifest: { name: 'incoming', version: '1.0.0', dependencies: { shared: '^1.0.0', fresh: '^1.0.0' }, dsh: { bundle: { patch: './cordis.patch.yml' } } } }] }, new URLSearchParams())
+  assert.deepEqual(plan.items[0].analysis.reused.map((entry) => entry.name), ['shared'])
+  assert.deepEqual(plan.items[0].analysis.reused[0].sharedWith, ['existing'])
+  assert.deepEqual(plan.items[0].analysis.additions.map((entry) => entry.name), ['fresh'])
+})
+
+test('uninstall plan preserves shared dependencies and identifies exclusive dependencies', async () => {
+  const { dir, api } = await fixture(); for (const name of ['target', 'other', 'shared', 'exclusive']) await mkdir(join(dir, 'node_modules', name), { recursive: true })
+  await atomicWriteJson(join(dir, 'package.json'), { name: 'profile', dependencies: { target: '1.0.0', other: '1.0.0', shared: '1.0.0', exclusive: '1.0.0' }, dsh: { profile: { bundles: ['target', 'other'] } } })
+  await atomicWriteJson(join(dir, 'node_modules', 'target', 'package.json'), { name: 'target', version: '1.0.0', dependencies: { shared: '^1.0.0', exclusive: '^1.0.0' }, dsh: { bundle: { patch: './cordis.patch.yml' } } })
+  await atomicWriteJson(join(dir, 'node_modules', 'other', 'package.json'), { name: 'other', version: '1.0.0', dependencies: { shared: '^1.0.0' }, dsh: { bundle: { patch: './cordis.patch.yml' } } })
+  await atomicWriteJson(join(dir, 'node_modules', 'shared', 'package.json'), { name: 'shared', version: '1.0.0' }); await atomicWriteJson(join(dir, 'node_modules', 'exclusive', 'package.json'), { name: 'exclusive', version: '1.0.0' })
+  const plan = await api.dispatch('plan.uninstall', { profile: 'web', packageNames: ['target'] }, new URLSearchParams())
+  assert.deepEqual(plan.summary.sharedDependencies, [{ name: 'shared', usedBy: ['other'] }])
+  assert.deepEqual(plan.summary.exclusiveDependencies, [{ name: 'exclusive' }])
+})
+
 test('catalog readme dispatches safe in-page document request', async () => {
   const { home } = await fixture(); const services = createServices(home)
   services.catalog.readReadme = async (url, ref, path) => ({ readme: '# 中文', path, detail: { repositoryUrl: url, defaultBranch: ref } })
@@ -58,6 +80,17 @@ test('update of an already-installed plugin plans a replacement, not a skip', as
   assert.equal(plan.summary.updates[0].to, 'github:acme/demo#v2.0.0')
   assert.equal(plan.items[0].analysis.duplicate, undefined)
   assert.equal(plan.items[0].analysis.replacing.packageName, 'demo')
+  assert.equal(plan.items[0].analysis.replacing.expectedVersion, '2.0.0')
+})
+
+test('update reuses the existing plugin identity without self capability conflicts', async () => {
+  const { dir, api } = await fixture(); await mkdir(join(dir, 'node_modules', 'demo'), { recursive: true })
+  await atomicWriteJson(join(dir, 'package.json'), { name: 'profile', dependencies: { demo: 'github:acme/demo' }, dsh: { profile: { bundles: ['demo'] } } })
+  await atomicWriteJson(join(dir, 'node_modules', 'demo', 'package.json'), { name: 'demo', version: '1.0.0', dsh: { bundle: { patch: './cordis.patch.yml' } } })
+  const plan = await api.dispatch('plan.install', { profile: 'web', items: [{ item: { name: 'demo', repositoryUrl: 'https://github.com/acme/demo', installSpec: 'github:acme/demo#v2.0.0' }, manifest: { name: 'demo', version: '2.0.0', dependencies: {}, dsh: { bundle: { patch: './cordis.patch.yml' } } } }] }, new URLSearchParams())
+  assert.equal(plan.summary.updates.length, 1)
+  assert.deepEqual(plan.summary.hardConflicts, [])
+  assert.equal(plan.items[0].analysis.replacing.packageName, 'demo')
 })
 
 test('identical install spec is still a duplicate and is skipped', async () => {
@@ -68,6 +101,15 @@ test('identical install spec is still a duplicate and is skipped', async () => {
   assert.deepEqual(plan.summary.duplicatePlugins, ['demo'])
   assert.equal(plan.summary.updates.length, 0)
   assert.equal(plan.items[0].analysis.duplicate.packageName, 'demo')
+})
+
+test('existing externally integrated package can update without a new bundle declaration', async () => {
+  const { dir, api } = await fixture(); await mkdir(join(dir, 'node_modules', 'Vibe-Skills'), { recursive: true })
+  await atomicWriteJson(join(dir, 'package.json'), { name: 'profile', dependencies: { 'Vibe-Skills': 'github:owner/Vibe-Skills#v1.0.0' }, dsh: { profile: { bundles: [] } } })
+  await atomicWriteJson(join(dir, 'node_modules', 'Vibe-Skills', 'package.json'), { name: 'Vibe-Skills', version: '1.0.0' })
+  const plan = await api.dispatch('plan.install', { profile: 'web', items: [{ item: { name: 'Vibe-Skills', repositoryUrl: 'https://github.com/owner/Vibe-Skills', installSpec: 'github:owner/Vibe-Skills#v2.0.0' }, manifest: { name: 'Vibe-Skills', version: '2.0.0' } }] }, new URLSearchParams())
+  assert.equal(plan.summary.updates.length, 1)
+  assert.equal(plan.items[0].analysis.replacing.preserveIntegration, true)
 })
 
 test('tasks.list returns current in-memory mutation tasks', async () => {
